@@ -1,0 +1,93 @@
+# src/ssml.py
+from typing import List, Dict, Optional, Union
+import xml.etree.ElementTree as ET
+import html
+
+# Data structures expected by the tests: SSMLTag and SSMLText
+class SSMLText:
+    def __init__(self, text: str):
+        self.text = text
+
+    def __repr__(self):
+        return f"SSMLText({self.text!r})"
+
+    def __eq__(self, other):
+        return isinstance(other, SSMLText) and self.text == other.text
+
+
+class SSMLTag:
+    def __init__(self, name: str, attributes: Optional[Dict[str, str]] = None, children: Optional[List[Union['SSMLTag','SSMLText']]] = None):
+        self.name = name
+        self.attributes = attributes or {}
+        self.children = children or []
+
+    def __repr__(self):
+        return f"SSMLTag(name={self.name!r}, attributes={self.attributes!r}, children={self.children!r})"
+
+    def __eq__(self, other):
+        if not isinstance(other, SSMLTag):
+            return False
+        return (self.name == other.name and
+                self.attributes == other.attributes and
+                self.children == other.children)
+
+
+def parseSSML(ssml: str) -> SSMLTag:
+    """
+    Parse SSML string into SSMLTag/SSMLText structure.
+    Returns the root SSMLTag (usually <speak>).
+    """
+    # Ensure entities are parsed correctly by xml parser; ElementTree handles standard entities.
+    # Use fromstring; if parsing fails, wrap in a root tag (defensive).
+    try:
+        root_elem = ET.fromstring(ssml)
+    except ET.ParseError:
+        root_elem = ET.fromstring(f"<root>{ssml}</root>")
+
+    def build(elem: ET.Element) -> SSMLTag:
+        # convert attributes as-is
+        attrs = dict(elem.attrib)
+        tag = SSMLTag(name=elem.tag, attributes=attrs, children=[])
+        # text before any children
+        if elem.text and elem.text.strip() != "":
+            # unescape xml entities
+            tag.children.append(SSMLText(html.unescape(elem.text)))
+        for child in list(elem):
+            # append child tag recursively
+            child_tag = build(child)
+            tag.children.append(child_tag)
+            # child's tail text (text after child) should be added as SSMLText if present
+            if child.tail and child.tail.strip() != "":
+                tag.children.append(SSMLText(html.unescape(child.tail)))
+        return tag
+
+    # If we wrapped with <root>, and the original root was wrapped, return children[0] if only one child
+    parsed = build(root_elem)
+    if parsed.name == "root" and len(parsed.children) == 1 and isinstance(parsed.children[0], SSMLTag):
+        return parsed.children[0]
+    return parsed
+
+
+def ssmlNodeToText(node: Union[SSMLTag, SSMLText]) -> str:
+    """
+    Convert SSMLTag/SSMLText nodes back to textual SSML representation.
+    For SSMLTag: returns string like "<tag>...children...</tag>"
+    For SSMLText: returns the raw text.
+    """
+    if isinstance(node, SSMLText):
+        return node.text
+    if isinstance(node, SSMLTag):
+        # Build attributes string
+        attrs = ""
+        if node.attributes:
+            parts = []
+            for k, v in node.attributes.items():
+                # keep attribute values as-is (escape if needed)
+                parts.append(f'{k}="{v}"')
+            attrs = " " + " ".join(parts)
+        # convert children
+        child_strs = [ssmlNodeToText(c) for c in node.children]
+        inner = "".join(child_strs)
+        return f"<{node.name}{attrs}>{inner}</{node.name}>"
+    # unknown type -> empty
+    return ""
